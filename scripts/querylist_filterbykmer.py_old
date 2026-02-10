@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import collections as cl
+import pandas as pd
+
+			
+class kmer_database:
+	
+	def __init__(self,  kmerlist):
+		
+		self.tran = str.maketrans('ATCGatcg', 'TAGCtagc')
+		self.kmer_db = {kmer for kmer in kmerlist}
+	
+		self.exclude = set()	
+	def countkmer(self, name, seq , ifrecord = 0,kmertype = 31):
+		
+		kmer_count = 0		
+			
+		for posi in range(len(seq)-kmertype+1):
+
+			kmer = seq[posi:posi+kmertype].upper()
+			kmer = max(kmer, kmer[::-1].translate(self.tran))
+
+			if kmer in self.kmer_db:
+			
+				kmer_count+=1	
+				
+				if ifrecord:
+					self.exclude.add(kmer)
+
+		return kmer_count
+
+	
+def main(args):
+	
+	kmertype = args.size
+	
+	kmerfile = args.kmer
+
+	if len(kmerfile) == 0:
+		kmerfile = args.input + "_kmer.list"
+	
+	infile = args.input
+	
+	outfile = args.output
+	
+	#anchorsize = args.anchor
+
+	kmeroutfile = args.kmerlist
+	if len(kmeroutfile) == 0:
+		kmeroutfile = outfile+"_kmer.list"
+
+	kmerlist = set([])
+	with open(kmerfile, mode = 'r') as f:
+
+		line = f.readline()
+		if len(line) and line[0] != ">" and line[0]!= "@":
+			kmerlist.add(line.strip().split()[0])
+		
+		for line in f:
+			
+			if len(line) and line[0] != ">":
+				kmerlist.add(line.strip().split()[0])
+
+	with open(infile, mode = 'r') as f:
+		
+		text = f.read()
+		headers = {read.splitlines()[0].split()[0]:read.splitlines()[0] for read in text.split(">")[1:]}
+		text = {read.splitlines()[0].split()[0]:"".join(read.splitlines()[1:]) for read in text.split(">")[1:]}
+		#samples = {read.splitlines()[0].split()[0]:read.splitlines()[0].split()[1].split("#")[0] for read in readtext.split(">")[1:]}
+	f.close()
+
+
+
+	kmers = kmer_database(kmerlist)
+	kmercounts = []	
+	outlist  = []
+	filterlist = []
+	for name, seq in text.items():
+	
+		header = headers[name]
+		#region  = header.split()[1].split(":")[1][:-1].split("-")	
+		#start = int("-".join(region[:-1]))
+		#end = int(region[-1])		
+
+		#gene_size = end - anchorsize -  (start+anchorsize) 
+		
+		#true_start = min(anchorsize, (start+anchorsize))
+		#true_end = true_start + gene_size
+
+		#geneseq = seq[true_start:true_end]
+	
+	
+		count = kmers.countkmer(name, seq)
+		
+		kmercounts.append((header+"\t" + str(len(seq))+ "\t" +str(count)))
+
+		print( kmercounts[-1])
+		if count> args.cutoff or count > ( len(seq) - 2 * args.anchor) * args.rcutoff :
+			outlist.append(name)
+		
+			#print(name, kmercounts[-1])	
+		else:
+
+			kmers.countkmer(name, seq, 1)
+			filterlist.append(name)
+		
+	f = open(outfile, mode ='w' ) 
+	for name in outlist:
+		header = headers[name]
+		seq = text[name]
+		f.write(">"+header+"\n"+seq+"\n")
+		
+	f.close()
+
+	f = open(outfile+"_exclude", mode ='w' )
+	for name in filterlist:
+		header = headers[name]
+		seq = text[name]
+		f.write(">"+header+"\n"+seq+"\n")
+           
+	f.close()
+
+
+	with open(kmeroutfile, mode ='w' ) as f:
+
+
+		f.write(">\n"+"\n>\n".join( kmerlist - kmers.exclude))
+	
+
+	#print ("\n".join(kmercounts))
+
+
+	#df_ori = pd.DataFrame.from_dict(table_values).rename(index= lambda x: list(tables.keys())[x].split()[0])
+	
+	#df_ori.to_csv(outfile, mode = 'w', header=None, index = 1, sep =',')
+		
+	
+	
+
+def run():
+	"""
+		Parse arguments and run
+	"""
+	parser = argparse.ArgumentParser(description="program determine psuedogene")
+	parser.add_argument("-i", "--input", help="path to input data file",dest="input", type=str, required=True)
+	parser.add_argument("-k", "--kmer", help="path to output file", dest="kmer",type=str, default="")
+	parser.add_argument("-s", "--size", help="kmer size", dest="size",type=int, default = 31)
+	parser.add_argument("-o", "--output", help="path to output file", dest="output",type=str, required=True)
+	parser.add_argument("-a", "--anchor", help="path to output file", dest="anchor",type=int, default=5000)
+	parser.add_argument("-l", "--list", help="path to kmer output file", dest="kmerlist",type=str, default="")
+	parser.add_argument("-c", "--cutoff", help="path to kmer output file", dest="cutoff",type=int, default=1000)
+	parser.add_argument("-r", "--rcutoff", help="path to kmer output file", dest="rcutoff",type=float, default=0.1)
+	parser.set_defaults(func=main)
+	args = parser.parse_args()
+	args.func(args)
+	
+	
+if __name__ == "__main__":
+	run()

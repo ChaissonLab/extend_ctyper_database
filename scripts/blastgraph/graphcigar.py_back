@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import re
+
+
+def makereverse(seq):
+	
+	tran=str.maketrans('ATCGatcg', 'TAGCtagc')
+	
+	return seq[::-1].translate(tran)
+
+def pathtoseq(path, pathstrs):
+	
+	pathes = re.findall(r'[><]s\d+', path)
+	
+	fullseq = ""
+	for eachpath in pathes:
+		
+		strd = eachpath[0]
+		
+		seq = pathstrs[eachpath[1:]]
+		
+		if strd == "<":
+			
+			seq = makereverse(seq)
+		
+		fullseq += seq
+			
+	return fullseq
+	
+	
+def cigaredit(cigars, queryseq, refseq):
+	
+	cigars = re.findall(r'\d+[a-zA-Z=]', cigars)
+	
+	refposi = 0
+	posi = 0
+	newcigars = []
+		
+	newref = ""
+	for cigar in cigars:
+		
+		thesize = int(cigar[:-1])
+		thetype = cigar[-1]
+		
+		if thetype == "=":
+			
+			"""
+			matchormismatch = 0
+			last_i = 0
+			newcigar = []
+			for i, (r,q) in enumerate(zip(refseq[refposi:(refposi+thesize)], queryseq[posi:(posi+thesize)])):
+			
+				if matchormismatch ==0 and r.upper() != q.upper():
+					
+					newcigar.append("={}".format(i-last_i))
+					last_i = i
+					matchormismatch = 1
+					check = 1
+				
+				elif matchormismatch ==1 and r.upper() == q.upper():
+					
+					newcigar.append("X{}".format(i-last_i))
+					last_i = i
+					matchormismatch = 0
+			
+			i = thesize
+			if matchormismatch ==0:
+				newcigar.append("={}".format(i-last_i))
+			else:
+				newcigar.append("X{}".format(i-last_i))
+		
+			cigar = "".join(newcigar)
+			"""
+			
+			newcigars.append(cigar)
+			
+			newref += refseq[refposi:(refposi+thesize)]
+			
+			posi += thesize
+			
+			refposi += thesize
+			
+			
+		elif thetype == "X":
+			
+			newcigars.append(cigar+queryseq[posi:(posi+thesize)])
+			posi += thesize
+			
+			newref += "X"*thesize
+			refposi += thesize
+		
+		elif thetype == "D":
+			
+			newcigars.append(cigar)
+			
+			refposi += thesize
+		
+		elif thetype == "I":
+			
+			newcigars.append(cigar+queryseq[posi:(posi+thesize)])
+			posi += thesize
+			
+			newref += "-"*thesize
+	
+	
+	return "".join(newcigars)
+	
+	
+
+def cigarcorr(graphfile, graphalign, input, output):
+	
+	with open(input, mode = 'r') as f:
+		reads = [read.splitlines() for read in f.read().split(">")[1:]]
+		reads = {read[0].split()[0]:"".join(read[1:]) for read in reads}
+		
+	pathseqs = dict()
+	with open(graphfile, mode = 'r') as f:
+		for line in f:
+			if line[0]=="S":
+				name, seq = line.split('\t')[1:3]
+				pathseqs[name]= seq
+	
+	w= open(output, mode = 'w')
+	
+	with open(graphalign, mode = 'r') as f:
+		for line in f:
+			elements = line.strip().split()
+			name, qsize, qstart, qend, path, rsize, rstart, rend = elements[:8]
+			path = elements[5]
+			index, cigar = [(i,x) for i,x in enumerate(elements) if x[:5] == "cg:Z:"][0]
+			
+			refseq = pathtoseq(path, pathseqs)[int(rstart):int(rend)]
+			queryseq = reads[name]
+			
+			
+			newcigar = cigaredit(cigar, queryseq[int(qstart):int(qend)], refseq)
+			
+						
+			elements[index] = "{}I{}".format(qstart,queryseq[:int(qstart)])+ newcigar + "{}I{}".format(int(qsize)-int(qend),queryseq[int(qend):])
+			
+			w.write("\t".join(elements)+"\n")
+	
+	w.close()
+
+def main(args):
+	
+	graphfile = args.input+"_minigraph.gfa"
+	graphalign = args.input+ "_minigraphalign.gaf"
+	
+	cigarcorr(graphfile, graphalign, args.input, args.output)
+
+def run():
+	"""
+		Parse arguments and run
+	"""
+	parser = argparse.ArgumentParser(description="program distract overlap genes and alignments on contigs")
+	
+	parser.add_argument("-i", "--input", help="path to output file", dest="input", type=str,required=True)
+	parser.add_argument("-o", "--output", help="path to output file", dest="output", type=str,required=True)
+	
+	parser.set_defaults(func=main)
+	args = parser.parse_args()
+	args.func(args)
+	
+	
+if __name__ == "__main__":
+	run()

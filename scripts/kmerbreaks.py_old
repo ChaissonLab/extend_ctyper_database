@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+
+import collections as cl
+import argparse
+import numpy as np
+import gzip
+import os
+
+class Matrix:
+    
+    def __init__(self):
+        
+        self.dim = 0
+        self.size = 0
+        self.data = np.zeros((0,0), dtype=np.int32)
+        
+    def load(self, filepath):
+        
+        with gzip.open(filepath,'rb') as f:
+            
+            firstrow = f.readline().decode().strip().split(",")[:-1]
+            
+            firstrow = [int(x) for x in firstrow]
+            
+            self.dim = len(firstrow)
+            
+            self.data = np.zeros((self.dim,self.dim), dtype=np.int32)
+            
+            self.data[0,:] = firstrow 
+            
+            index = 0
+            for row in f:
+                
+                index += 1
+                row = row.decode().strip().strip(",").split(",")
+                self.data[index,:] = [0]*(self.dim- len(row))+[int(x) for x in row]
+                
+            for i in range(self.dim):
+                
+                for j in range(i+1, self.dim):
+                    
+                    self.data[j,i] = self.data[i,j]
+                    
+        return self
+    
+    
+def getmatch(work_indices, contigs,  thematrix, skipcontigs, size):
+    
+    work_row = np.sum(thematrix[work_indices,:], axis=0)
+    work_norm = np.sum(work_row.astype(np.float64) )
+    
+    
+    lastdist = 100000000000000
+    mapped_chunks = []
+    for contig, regions in contigs.items():
+        
+        if contig in skipcontigs:
+            continue
+        
+        indeces = [x[-1] for x in regions]
+        
+        thesum = np.zeros(size)
+        lastdist = 100000000000000
+        
+        mapped_chunk = []
+        for index2 in indeces:
+            
+            new_row = thematrix[index2, :] 
+            new_sum = thesum + new_row
+            
+            new_norm = np.sum(new_sum.astype(np.float64) )
+            
+            sumdist = np.sum((abs(new_sum - work_row)).astype(np.float64) )  
+            rowdist = np.sum((abs(new_row - work_row)).astype(np.float64) ) 
+            if (sumdist <= lastdist and sumdist <= rowdist) :
+                lastdist = sumdist
+                thesum = new_sum
+                mapped_chunk.append(index2)
+            else:  
+                if len(mapped_chunk):
+                    if  lastdist < 0.1 * min(work_norm, new_norm) :
+                        #print(lastdist/ min(work_norm, new_norm), contig, work_indices, mapped_chunk)
+                        mapped_chunks.append([ mapped_chunk, lastdist/ min(work_norm, new_norm), contig])
+                        mapped_chunk = []
+                        
+                    lastdist = 100000000000000
+                    mapped_chunk = []
+                    
+                if sumdist > rowdist:
+                    mapped_chunk = [index2]
+                    thesum = new_row 
+                    lastdist = rowdist
+                else:
+                    thesum = np.zeros(size)
+                    mapped_chunk = []
+                    lastdist = 100000000000000
+                    
+        if len(mapped_chunk):
+            if  lastdist < 0.1 * min(work_norm, new_norm):
+                
+                mapped_chunks.append([ mapped_chunk, lastdist/ min(work_norm, new_norm), contig ])
+                
+                
+    return mapped_chunks
+
+
+
+def fixcontig(contig, contigdata, contigs, thematrix, size):
+    
+    indeces = [x[-1] for x in contigdata]
+    
+    
+    sortindex = 0
+    results = []
+    for sortindex, newindex in enumerate(indeces):
+        
+        current_break = []
+        skipcontigs = set([contig])
+        for newindex in indeces[(sortindex):]:
+            
+            current_break.append(newindex)
+            
+            findmatch = getmatch(current_break, contigs, thematrix,skipcontigs, size)
+            
+            #skipcontigs.update(set([x[-1] for x in findmatch]))
+            
+            
+            if len(findmatch):
+                results.extend([[tuple(current_break),tuple(x[0]),x[1]] for x in findmatch])
+                
+            if len(skipcontigs) == len(contigs):
+                pass
+                
+                
+    return results
+
+                
+def reducematrix(contigs, thematrix, names, name_tocontig):
+    
+    name_link = dict()
+    include_contigs = []
+    include_rows = []
+    
+    allcontigs = [x for x in contigs.keys() if x[0].startswith("NC_0609")] + [x for x in contigs.keys() if not x[0].startswith("NC_0609")]
+    
+    for contig in allcontigs:
+        
+        segments = contigs[contig]
+        ifskip = 0
+        for oldcontig in include_contigs:
+            
+            oldsegments = contigs[oldcontig]
+            
+            if len(segments) != len(oldsegments):
+                continue
+            
+            ifallmatch = 1
+            for segment,oldsegment in zip(segments,oldsegments):
+                
+                oldsize = abs(oldsegment[1] - oldsegment[0])
+                newsize = abs(segment[1] - segment[0])
+                
+                if abs(math.log(oldsize) - math.log(newsize)) > math.log(1.05):
+                    
+                    ifallmatch = 0
+                    break
+                
+                newrow = thematrix[segment[-1], :] 
+                oldrow = thematrix[oldsegment[-1], :] 
+                
+                newnorm = np.sum(newrow.astype(np.float32) )
+                oldnorm = np.sum(oldrow.astype(np.float32) )
+                
+                dot_product = np.sum((abs(newrow - oldrow)).astype(np.float64) )   / min(newnorm, np.sum(oldrow.astype(np.float32))  )
+                if dot_product > 0.05:
+                    ifallmatch = 0
+                    break
+                
+            if ifallmatch:
+                ifskip = 1
+                for segment,oldsegment in zip(segments,oldsegments):
+                    name_link[segment[-1]] = oldsegment[-1]
+        if ifskip == 0:
+            include_contigs.append(contig)
+            
+    return include_contigs,name_link
+
+def fixall(contigs, thematrix, names, name_tocontig):
+   
+ 
+    size = len(names)
+    
+    include_contignames, name_link = reducematrix(contigs, thematrix, names, name_tocontig)
+    
+    include_contigs = {contig:data for contig,data in contigs.items() if contig in include_contignames}
+    
+    
+    results = []
+    for contig, regions in contigs.items():
+        
+        if contig not in include_contigs:
+            continue
+        
+        indeces = [x[-1] for x in regions]
+        
+        result = fixcontig(contig, contigs[contig], include_contigs, thematrix, size)
+        results.extend(result)
+        
+    for name, link in name_link.items():
+        
+        results.append([tuple([name]),tuple([link]),0.0]) 
+        
+        
+    return results
+
+    
+            
+def getcontigs(inputfile):
+    
+    ifexons = set()
+    names = []
+    contigs = cl.defaultdict(list)
+    name_tocontig = cl.defaultdict(list)
+    index = -1
+    with open(inputfile, mode = 'r') as f:
+        
+        for line in f:
+            
+            if line.startswith(">"):
+                
+                index += 1
+                name, locus = line[1:].split()[:2]
+                names.append(name)
+                exon = line.split()[-2]
+                if exon == "Exon":
+                    ifexons.add(name)
+                    
+                strd = "+"
+                contig, region = locus.split(":")
+                if region[-1] in ["+","-"]:
+                    region = region[:-1]
+                    strd = locus[-1]
+                    
+                region = region.split("-")
+                region = [int(region[0]), int(region[1]), index] if strd == "+" else [int(region[1]), int(region[0]), index]
+                
+                contigs[contig].append(region)
+                
+    allsize =0 
+    new_contigs = cl.defaultdict(list)
+    for contig, regions in contigs.items():
+        
+        new_regions = []
+        
+        strd = sorted(regions, key = lambda x:  -abs(x[0]-x[1]))[0]
+        
+        strd = '+' if strd[1] > strd[0] else '-'
+        
+        regions_sort = sorted(regions) if contig[-1] == '+' else sorted(regions, reverse = 1)
+        
+        lastend = regions_sort[0]
+        lastregion = regions_sort[0]
+        new_regions = [[regions_sort[0]]]
+        
+        allsize += abs(regions_sort[0][1]-regions_sort[0][1])
+        for region in regions_sort[1:]:
+            if max(region[0],region[1], lastend[0],lastend[1]) - min(region[0],region[1], lastend[0],lastend[1]) - abs(region[1]-region[0] ) - abs(lastend[1] - lastend[0]) < 30000:
+                
+                new_regions[-1].append(region)
+            else:
+                new_regions.append([region])
+            
+            allsize += abs(region[0]-region[1])
+            lastend = region
+                
+        new_contigs.update({(contig+strd,i):regions for i,regions in enumerate(new_regions)})
+        
+    
+    for contig, regions in new_contigs.items():
+        
+        for region in regions:
+            
+            name_tocontig[region[-1]] = contig
+            name_tocontig[names[region[-1]]] = contig
+            
+    return names, new_contigs, name_tocontig, ifexons
+
+
+    
+    
+
+def uniform_truncate(thematrix, names, contigs, name_tocontig):
+    
+    contigs = {name:sorted(segments) if name[-1] == '+' else sorted(segments, reverse = 1) for name, segments in contigs.items()}
+
+    results = fixall( contigs, thematrix.data, names, name_tocontig)
+    results = sorted(results, key = lambda x:x[2])
+    
+    newresults = cl.defaultdict(list)
+    for result in results:
+        
+        #print([names[x] for x in result[0]], [names[x] for x in result[1]], result[2])
+        
+        if result[1] in newresults[result[0]] or result[0] in newresults[result[1]]:
+            continue
+        
+        newresults[result[0]] =  result[1]
+        newresults[result[1]] =  result[0]
+        
+    newresults = list(set([tuple(sorted(list(key)+list(value))) for key, value in newresults.items()]))
+    
+    connects = list(range(len(names)))
+    
+    results_sort = [[] for x in connects]
+    for result in newresults:
+        
+        for x in result:
+            
+            results_sort[x].extend(result)
+            
+    themax = len(names)
+    
+    for result in results_sort:
+        
+        allkeys = result
+        
+        themin = themax
+        for key in allkeys:
+            
+            oldindex = key
+            newindex = connects[oldindex]
+            
+            while newindex < oldindex:
+                
+                oldindex = newindex
+                newindex = connects[oldindex]
+                
+            themin = min(themin, newindex)
+            
+        for key in allkeys:
+            
+            connects[key] = themin
+            
+    for result in results_sort:
+        
+        allkeys = result
+        
+        themin = themax
+        for key in allkeys:
+            
+            oldindex = key
+            newindex = connects[oldindex]
+            
+            while newindex < oldindex:
+                
+                oldindex = newindex
+                newindex = connects[oldindex]
+                
+            themin = min(themin, newindex)
+            
+        for key in allkeys:
+            
+            connects[key] = themin
+            
+    allblocks = []
+    for contig, regions in contigs.items():
+        
+        block = [regions[0]]
+        lastindex = connects[regions[0][-1]]
+        for region in regions[1:]:
+            
+            if  connects[region[-1]] == lastindex:
+                
+                block.append(region)
+                
+            else:
+                
+                allblocks.append(block)
+                
+                block = [region]
+                
+                
+            lastindex = connects[region[-1]]
+            
+            
+        allblocks.append(block)
+        
+        
+        
+    exclude = set()
+    newallblocks = []
+    for block in allblocks:
+        
+        if len(block) < 2:
+            continue
+        
+        contig = name_tocontig[block[0][-1]]
+        
+        name = [names[index[-1]] for index in block]
+        
+        start = min([x for y in block for x in y[:2]])
+        end = max([x for y in block for x in y[:2]])
+        exclude.update(name)
+        newallblocks.append([contig, start, end ,name])
+        
+        
+    return newallblocks, exclude
+
+def output(inputfile, breakfile,outputfile, query ):
+    
+    original_info = dict()
+    with open(inputfile, mode = 'r') as f:
+        for line in f:
+            if line.startswith(">"):
+                line = line.split()
+                original_info[line[0][1:]] = line[1:]
+        
+    exclude = set()
+    with open(breakfile, mode = 'r') as f:
+        
+        outputs = [x.split() for x in f.readlines()]
+        
+        for output in outputs:
+            
+            originals = output[-1].split(";")
+            
+            ifexon = "Exon" if any(x for x in originals if original_info[x][-2] == 'Exon') else "Intron"
+            
+            chm13info = ";".join(set([original_info[x][-1] for x in originals]))
+            
+            output.append(ifexon)
+            output.append(chm13info)
+            output.append(originals[0])
+            exclude.update(originals)
+        
+    
+    haplopath = dict()
+    with open(query, mode = 'r') as f:
+        for line in f:
+            line = line.strip().split()
+            haplopath[line[0]] = line[1]
+    
+            
+    os.system("rm {} || true ".format(outputfile))
+    for output in outputs:
+        
+        contig = output[0].split(":")[0]
+        
+        if "#" not in contig: 
+            haplo = "CHM13_h1" if "NC_0609" in contig else "HG38_h1"
+        else:
+            haplo = "_h".join(contig.split("#")[:2])
+            
+        path = haplopath[haplo]
+        strd = "-i" if output[1] == "-" else ""
+        
+        os.system("samtools faidx {} {}:{}-{}  {} >> {}".format(path,contig, output[2],output[3] ,strd, outputfile))
+        
+    with open(outputfile, mode = 'r') as f:
+        
+        reads = f.read().split(">")[1:]
+        reads = {output[4].split(";")[0]: (output,read) for read,output in zip(reads,outputs)}
+      
+    with open(outputfile, mode = 'w') as w, open(inputfile, mode = 'r') as r:
+        ifskip = 1
+        for line in r:
+            
+            if line.startswith(">"):
+                
+                name = line.split()[0][1:]
+                if name in exclude:
+                    ifskip = 1
+                    
+                    if name in reads:
+                       
+                        output,read = reads[name]
+                        
+                        header = ">{}\t{}:{}-{}{}\t{}\t{}".format(name,output[0],output[2],output[3],output[1],output[5],output[6])
+                        w.write(header +"\n"+ "\n".join(read.splitlines()[1:])+"\n")
+                        
+                else:
+                    ifskip = 0
+                    
+                    
+            if not ifskip:
+                
+                w.write(line)          
+    
+                
+def outputnorm(matrix, outputfile, names, allblocks):
+    
+    name_toindex = {name:i for i, name in enumerate(names)}
+    
+    exclude_indices = set()
+    replace_index = dict()
+    for block in allblocks:
+        
+        blockindices = [name_toindex[name] for name in block[-1]]
+        
+        row_sum = np.sum(matrix[blockindices, :], axis=0)
+        
+        matrix[blockindices[0], :] = row_sum
+        
+        exclude_indices.update(blockindices[1:])
+        
+    exclude_indices = list(exclude_indices)
+    matrix = np.delete(matrix, exclude_indices, axis=0) 
+    matrix = np.delete(matrix, exclude_indices, axis=1)  
+    
+    matrix = matrix.astype(np.int32)
+    
+    with gzip.open(outputfile+"_norm.gz", "wt") as f:
+        for row in matrix:
+            f.write(",".join(map(str, row)) + "\n")
+            
+
+
+def kmeranalysis(args):
+    
+    thematrix = Matrix().load(args.norm)
+    
+    names, contigs, name_tocontig, ifexons = getcontigs(args.input)
+    
+    newallblocks, exclude = uniform_truncate(thematrix, names, contigs, name_tocontig)
+    
+    
+    """
+    if len(newallblocks) == 0:
+        os.system("echo > {} || true".format(args.output + "_fixlog.txt"))
+        os.system("ln -f {} {} || true".format(args.norm, args.output+"_norm.gz"))
+        if len(args.query):
+            os.system("ln -f {} {} || true".format(args.input, args.output))
+            
+        return 
+    
+    """
+    with open(args.output+"_allloci.txt", mode = 'w') as f:
+        
+        size = 0 
+        for contig,data in contigs.items():
+            
+            for region in data:
+                size += abs(region[1] - region[0])
+                
+            start = min(sum(data,[]))
+            end = max(sum(data,[]))
+            
+            f.write("{}\t{}\t{}\t{}\t{}\n".format(contig[0][:-1], contig[0][-1], start,end, ";".join([names[x[-1]] for x in data]) ))
+           
+    outputs = []
+    with open(args.output+"_fixlog.txt", mode = 'w') as f:
+        for block in newallblocks:
+ 
+            outputs.append([block[0][0][:-1],block[0][0][-1],block[1],block[2],block[-1], "Exon" if any(element in ifexons for element in block[-1]) else "Intron"] )
+            f.write("{}\t{}\t{}\t{}\t{}\n".format(block[0][0][:-1],block[0][0][-1],block[1],block[2], ";".join(block[-1])))
+
+
+def makefasta(args):
+    
+    inputfile = args.input 
+    breakfile =  args.output+"_fixlog.txt"
+    outputfile = args.output 
+    query = args.query
+    threads = args.threads
+        
+    output(inputfile,breakfile,outputfile, query)
+    
+    
+    
+            
+def main(args):
+    
+    if args.makefasta == 0 or args.makefasta==2:
+    
+        kmeranalysis(args)
+    
+    if args.makefasta == 1 or args.makefasta==2:
+        
+        makefasta(args)
+    
+    """     
+    outputnorm(thematrix.data, args.output, names, newallblocks)
+    
+    if len(args.query):
+        
+        #output(args.input, args.output, args.query, outputs, exclude )
+    """  
+        
+def run():
+    """
+        Parse arguments and run
+    """
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("-i", "--input", help="path to input data file",dest="input", type=str, required=True)
+    parser.add_argument("-n", "--norm", help="path to input data file",dest="norm", type=str, default = "")
+    parser.add_argument("-o", "--output", help="path to output file", dest="output",type=str, required=True)
+    parser.add_argument("-q", "--query", help="path to output file", dest="query",type=str, default = "")
+    parser.add_argument("-m", "--makefasta", help="path to output file", dest="makefasta",type=int, default = 0)
+    parser.add_argument("-t", "--threads", help="path to output file", dest="threads",type=int, default = 1)
+    
+    parser.set_defaults(func=main)
+    args = parser.parse_args()
+    args.func(args)
+    
+    
+if __name__ == "__main__":
+    run()

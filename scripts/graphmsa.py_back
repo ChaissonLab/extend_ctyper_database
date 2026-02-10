@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import subprocess
+import datetime
+from split_tosamples import filesplit
+from graphinserts import insertcorr
+from graphcigar import cigarcorr
+
+def lineartograph():
+        
+        pass
+
+def aligngraph(folder, graphfile, graphalign = ""):
+        
+        try:
+                os.remove(graphalign)
+        except:
+                pass
+                
+        allfiles = [folder +"/"+ file for file in os.listdir(folder) if file[-3:]==".fa"]
+        
+        for file in allfiles:
+                
+                if len(graphalign):
+                        cmd = "minigraph --vc -cx asm {} {} >> {}  ".format(graphfile, file, graphalign)
+                else:
+                        cmd = "minigraph --vc -cx asm {} {} > {}_alignone.gaf ".format(graphfile,file,file)
+                        
+                os.system(cmd)
+                
+def aligncorred(graphfile, inputfile, alignfile):
+        
+        cmd = "minigraph --vc -cx asm {} {} > {} ".format(graphfile,inputfile,alignfile)
+        
+        os.system(cmd)
+        
+        graphfasta = graphfile + ".fasta"
+        
+        cmd = "cat {} | grep \"^S\" | awk '{{print \">\"$2\"\\n\"$3}}' > {}".format( graphfile ,  graphfasta )
+        
+        os.system(cmd)
+        
+        insertfile = alignfile+"_inserts.fasta"
+        
+        insertalign = alignfile+"_inserts.paf"
+        
+        insertcorr(graphfile, alignfile, inputfile, insertfile)
+
+        cmd = "minimap2 -c -x map-hifi --dual=yes {} {} >> {}".format(graphfasta,insertfile,alignfile)
+
+        os.system(cmd) 
+        
+
+def minigraphcorr():
+
+
+def runminigraph(folder, input, graphfile, graphalign ):
+
+        try:
+                os.mkdir(folder)
+        except:
+                pass
+
+        filesplit(input, folder)
+
+        try:
+                os.rename(folder+"/CHM13_h1.fa", folder+"/00000_CHM13_h1.fa")
+        except:
+                pass
+
+        try:
+                os.rename(folder+"/HG38_h1.fa", folder+"/00000_HG38_h1.fa")
+        except:
+                pass
+
+        """
+        allfiles = sorted([( 10e20 if "CHM13_" in file else 10e19 if  "HG38_" in file else os.path.getsize(folder+"/"+file) , folder+"/"+file, ) for file in os.listdir(folder) if file[-3:]==".fa"], reverse = 1)
+
+        for i,(size,file) in enumerate(allfiles):
+
+                if i > 0 :
+                        cmd = "minigraph -cx ggs {} {}  -l 100 -d 50 -L 20 --ins-qovlp=yes  -t 1  > {} && mv {} {}".format( graphfile, file, graphfile+"_temp", graphfile+"_temp", graphfile)
+                else:
+                        cmd = "minigraph -cxggs -l 100 -d 50 -L 20  --ins-qovlp=yes  -t 1 {} > {}".format( file, graphfile)
+
+                os.system(cmd)
+
+        """
+        cmd = "minigraph -cxggs -l 100 -d 50 -L 20  --ins-qovlp=yes  -t 1 {}/*.fa > {}".format( folder, graphfile)
+
+        os.system(cmd)
+
+
+        
+
+def mergegraph(graphfile0, graphfile1, newtag = "i"):
+
+        with open (graphfile0, mode = 'a') as w:
+
+                with open(graphfile1, mode = 'r') as f:
+
+                        for line in f:
+
+                                if len(line) == 0:
+
+                                        continue
+
+                                if line[0] == "S":
+
+                                        line = line.strip().split()
+
+                                        line [1] = line[1]+newtag
+
+                                        line = "\t".join(line)
+
+                                elif line[0] == "L":
+
+                                        line = line.strip().split()
+
+                                        line [1] = line[1]+newtag
+
+                                        line [3] = line[3]+newtag
+
+                                        line = "\t".join(line)
+
+                                w.write(line)
+
+        with open (graphfile0, mode = 'r') as f:
+
+                reads = sorted(f.read().splitlines())
+
+        with open (graphfile0+"corr.gfa", mode = 'w') as f:
+
+                f.write("\n".join(reads))
+
+        os.rename(graphfile0+"corr.gfa", graphfile0)
+
+
+def runinsertcorr(folder, input, graphfile, graphalign ):
+
+        try:
+                os.mkdir(folder+"/inserts/")
+        except:
+                pass
+
+        allfiles = [(folder +"/"+ file, folder+"/inserts/"+file) for file in os.listdir(folder) if  file[-3:]==".fa"]
+
+        for (infile,outfile) in allfiles:
+
+                alignfile = infile + "_alignone.gaf"
+
+                insertcorr(graphfile, alignfile, infile, outfile)
+
+        allinserts = sorted([folder+"/inserts/"+file for file in os.listdir(folder+"/inserts/") if  file[-6:]==".fasta"], key = lambda x: os.path.getsize(x), reverse = 1)
+
+
+        if len(allinserts) == 0:
+                return
+
+        insertgraphfile = input+"_insertgraph.gfa"
+
+        cmd = "minigraph -cxggs -l 100 -d 50 -L 20  --ins-qovlp=yes  -t 1 {} > {}".format( allinserts[0], insertgraphfile)
+
+        os.system(cmd)
+
+        for index, insertfile in enumerate(allinserts[1:]):
+
+                insertfile_align = insertfile+"_align.gaf"
+
+                addinsert = insertfile+"_add.fa"
+
+                addgraph = insertfile+"_add.gfa"
+
+                cmd = "minigraph --vc -cx asm -t 1 {} {} > {} ".format( insertgraphfile, insertfile , insertfile_align)
+
+                os.system(cmd)
+
+                insertcorr(insertgraphfile, insertfile_align, insertfile, addinsert)
+
+                cmd = "minigraph -cxggs -l 100 -d 50 -L 20  --ins-qovlp=yes  -t 1 {}* > {}".format( addinsert, addgraph)
+
+                os.system(cmd)
+
+                mergegraph(insertgraphfile, addgraph, "i"+str(index))
+
+        mergegraph(graphfile,insertgraphfile)
+
+
+
+
+
+def main(args):
+
+        folder = args.input +  datetime.datetime.now().strftime("%y%m%d_%H%M%S/")
+        folder = "./tempx/"
+
+        graphfile = args.input +"_minigraph.gfa"
+
+        graphalign = args.input + "_minigraphalign.gaf"
+
+        runminigraph(folder, args.input, graphfile, graphalign )
+
+        aligncorred( graphfile, args.input, graphalign  )
+        
+        exit(0)
+
+        runinsertcorr(folder, args.input, graphfile, graphalign )
+
+        aligngraph(folder, graphfile, graphalign)
+
+        unmapped = args.input + "_graphinserts.fasta"
+
+        insertcorr( graphfile, graphalign,  args.input, unmapped )
+
+        cmd = "minigraph --vc -cx asm {} {} >> {} ".format(graphfile,unmapped,graphalign)
+
+        cigarcorr(graphfile, graphalign, args.input, graphalign+"_corr.gaf")
+
+        os.rename(graphalign+"_corr.gaf", graphalign)
+
+        os.remove(unmapped)
+        try:
+                os.system('rm -rf {}'.format(folder))
+        except:
+                pass
+
+
+def run():
+        """
+                Parse arguments and run
+        """
+        parser = argparse.ArgumentParser(description="program distract overlap genes and alignments on contigs")
+
+        parser.add_argument("-i", "--input", help="path to output file", dest="input", type=str,required=True)
+
+        parser.set_defaults(func=main)
+        args = parser.parse_args()
+        args.func(args)
+
+
+if __name__ == "__main__":
+        run()

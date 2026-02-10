@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+import collections as cl
+
+errorflag = 7
+
+
+def pack_numbers(first, second, third):
+    
+    result = (first << 63) | (second << 32) | third
+    return result
+
+def unpack_numbers(packed):
+    third = packed & ((1 << 32) - 1)           # bits 0–31
+    second = (packed >> 32) & ((1 << 31) - 1)  # bits 32–62
+    first = (packed >> 63) & 1                 # bit 63
+    return first, second, third
+
+def intdecode(value):
+    v = 0
+    for c in value:
+        v *= 64
+        v += ord(c) - ord("0")
+    return v
+
+def intencode(value):
+    
+    code = ""
+    
+    code = chr( ord('0') + (value % 64) ) + code
+    value = value//64
+    
+    while value:
+        
+        code = chr( ord('0') + (value % 64) ) + code
+        value = value//64
+        
+    return code
+
+def kmerencode(kmer):
+    
+    kmerint = 0
+    for base in kmer:
+        
+        kmerint *= 4
+        if base=='a' or base =='A':
+            
+            kmerint += 0
+            
+        elif base=='c' or base =='C':
+            
+            kmerint += 1
+            
+        elif base=='g' or base =='G':
+            
+            kmerint += 2
+        elif base=='t' or base =='T':
+            
+            kmerint += 3
+            
+    return kmerint
+
+def kmerdecompress(kmerstr, size = 31):
+    
+    kmerint = 0
+    for char in kmerstr:
+        
+        kmerint *= 64
+        kmerint += ord(char) - ord('0')
+        
+    return kmerint
+
+def addflag(flagfile):
+    
+    kmerflags = dict()
+    with open(flagfile, mode = 'r') as f:
+        
+        for line in f:
+            
+            if line.startswith('>') == False:
+                
+                line = line.strip().split()
+                
+                kmer = kmerencode(line[0])
+                                    
+                kmerflag = line[1]
+                kmerratio = round ( float(line[2])/max(1.0, float(line[3])) , 6)
+                
+                if int(kmerflag) >= errorflag:
+                    kmerflags[kmer] = pack_numbers(0, max(0,int(kmerflag)), min(1000, int(100 * float(kmerratio) + 0.5)))
+                                        
+    return kmerflags
+
+def parse_encoded(text):
+    def intdecode(value):
+        v = 0
+        for c in value:
+            v *= 64
+            v += ord(c) - ord("0")
+        return v
+    def eachelement(text):
+        if "*" in text:
+            d = intdecode(text.split("*")[1])
+            text = text.split("*")[0]
+        else:
+            d = 1
+            
+        if "~" in text:
+            start, size = text.split("~")
+            start = intdecode(start)
+            size = intdecode(size)
+            c = [x for y in range(start, start + size + 1) for x in [y] * d]
+        else:
+            c = [intdecode(text)] * d
+            
+        return c
+    
+    return [x for y in text.split(",")[:-1] for x in eachelement(y)]
+    
+    
+def getmax(text):
+    
+    if "*" in text:
+        text = text.split("*")[0]
+        
+    if "~" in text:
+        c = intdecode(text.split('~')[1]) + intdecode(text.split('~')[0])
+    else:
+        c = intdecode(text)
+        
+    return c
+
+
+def main(args):
+    
+    names = []
+    kmer_nums = []
+    eles_nums = []
+    flagfile = args.error 
+    kmerflags = dict()
+    if len(args.error):
+        kmerflags = addflag(flagfile)
+    
+    with open(args.input, mode = 'r') as r, open(args.input+"_", mode = 'w') as w:
+        
+        line = r.readline()
+        kmer_num = 0
+        eles_num = 0
+        while line:
+            if len(line):
+                if line[0] == '#':
+                    names.append(line.split()[0])
+                    kmer_nums.append(kmer_num)
+                    eles_nums.append(eles_num)
+                    kmer_num = 0 
+                    eles_num = 0
+                elif line[0] == "&" or line[0] == '^':
+                
+                    kmer_num += 1
+                    line = line.split('\t')
+                    
+                    ranges = 0
+                    if line[0][1] in ['-','+']:
+                        ranges = sum(parse_encoded(line[-1]))
+                    eles_num += ranges+10
+                        
+                    kmerint = kmerdecompress(line[-2])
+                    
+                    packed = kmerflags.get(kmerint, 0)
+                    
+                    if (packed >> 63) & 1:
+                        print(line)
+                        line[0] = '^'+line[0][1:]
+                    else:
+                        kmerflags[kmerint] = packed | (1 << 63)
+                    
+                    if packed > 1:
+                        _, kmerflag, kmerratio = unpack_numbers(packed)
+                        line[1] = intencode(kmerflag)+"|"+intencode(kmerratio)
+                    
+                    line = "\t".join(line)
+                
+                w.write(line)
+            line = r.readline()
+            
+        kmer_nums.append(kmer_num)
+        eles_nums.append(eles_num)
+    
+    locations = []
+    with open(args.input+"_", mode = 'r') as r:
+        
+        line = r.readline()
+        kmer_num = 0
+        eles_num = 0
+        while line:
+            if len(line):
+                if line[0] == '#':
+                    locations.append(r.tell() - len(line))
+            line = r.readline()
+        locations.append(r.tell())
+        
+    with open(args.input+".index", mode = 'w') as f:
+        
+        last_location = 0
+        
+        for name, location,kmer_num, eles_num in zip(names, locations[1:], kmer_nums[1:], eles_nums[1:]):
+            
+            f.write("{}\t{}\t{}\t{}\t{}\n".format(name, last_location, location, kmer_num, eles_num))
+            last_location = location
+            
+    os.system("mv {} {}".format(args.input+"_", args.input))
+            
+def run():
+    """
+        Parse arguments and run
+    """
+    parser = argparse.ArgumentParser(description="program run partition")
+    parser.add_argument("-i", "--input", help="path to input data file", dest="input", type=str, required=True)
+    parser.add_argument("-e", "--error", help="path to input data file", dest="error", type=str, default= "")
+    parser.set_defaults(func=main)
+    args = parser.parse_args()
+    args.func(args)
+    
+    
+if __name__ == "__main__":
+    run()

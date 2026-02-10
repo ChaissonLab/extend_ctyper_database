@@ -1,0 +1,1049 @@
+#!/usr/bin/env python3
+
+import os
+import threading
+import argparse
+import concurrent.futures
+import datetime
+import collections as cl
+import re
+import numpy as np
+
+
+script_folder = os.path.dirname(os.path.abspath(__file__))
+cutoffdistance = 30000
+
+def process_locus2(region, haplopath, folder, outputfile):
+    
+        newname,  contig, start, end, ifexon, mapinfo = region
+    
+        if "#" not in contig: 
+                haplo = "CHM13_h1" if "NC_0609" in contig else "HG38_h1"
+        else:
+                haplo = "_h".join(contig.split("#")[:2])
+            
+        path = haplopath[haplo]
+    
+        outputfile0 = os.path.join(folder, f"{newname}.fa")
+    
+        header = ">{}\t{}:{}-{}\t{}\t{}".format(newname, contig, start, end, ifexon, mapinfo)
+    
+        cmd1 = f'echo "{header}" >> {outputfile} && samtools faidx {path} {contig}:{start}-{end} | tail -n +2 >> {outputfile}'
+    
+        os.system(cmd1)
+    
+        return outputfile0
+
+
+def makenewfasta2(regions, queryfile, outputfile, folder, threads):
+    
+        haplopath = dict()
+        with open(queryfile, mode = 'r') as f:
+                for line in f:
+                        line = line.strip().split()
+                        haplopath[line[0]] = line[1]
+                    
+        os.system("rm {} || true ".format(outputfile))
+    
+        alloutputs = []
+    
+                #with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                        #futures = []
+        for region in regions:
+                                # Submit jobs to executor
+                process_locus2( region, haplopath, folder, outputfile)
+                                #futures.append(executor.submit(process_locus2, region, haplopath, folder, outputfile))
+                        #alloutputs.append(os.path.join(folder, f"{region[0]}.fa"))
+                        # Wait for all threads to complete
+                        #concurrent.futures.wait(futures)
+                            
+            
+            
+def makegraph(fastafile, folder, threads):
+    
+        os.system("python {}/graphmake.py -i {}  -d {} -t {}".format(script_folder, fastafile, folder, threads))
+    
+def process_locus(index, line, haplopath, folder, outputfile):
+        line = line.strip().split()
+        contig = line[0]
+    
+        if "#" not in contig: 
+                haplo = "CHM13_h1" if "NC_0609" in contig else "HG38_h1"
+        else:
+                haplo = "_h".join(contig.split("#")[:2])
+            
+        path = haplopath[haplo]
+        strd = "-i" if line[1] == "-" else ""
+    
+        outputfile0 = os.path.join(folder, f"loci_{index}.fa")
+    
+    
+        header = ">loci_{}\t{}:{}-{}{}\t{}".format(index, contig, line[2], line[3], line[1], line[4],line[5])
+    
+        line[2] = str(int(line[2]) + 1) 
+        cmd1 = f'echo "{header}" > {outputfile0} && samtools faidx {path} {contig}:{line[2]}-{line[3]} {strd} | tail -n +2 >> {outputfile0}'
+        os.system(cmd1)
+    
+        return outputfile0
+
+
+def makenewfasta(locifile, queryfile, outputfile, folder, threads):
+    
+    
+        haplopath = dict()
+        with open(queryfile, mode = 'r') as f:
+                for line in f:
+                        line = line.strip().split()
+                        haplopath[line[0]] = line[1]
+                    
+        os.system("rm {} || true".format(outputfile))
+    
+        alloutputs = []
+        with open(locifile, mode='r') as f:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                        futures = []
+                        for index, line in enumerate(f, start=1):
+                                # Submit jobs to executor
+                                futures.append(executor.submit(process_locus, index, line, haplopath, folder, outputfile))
+                                alloutputs.append(os.path.join(folder, f"loci_{index}.fa"))
+                        # Wait for all threads to complete
+                        concurrent.futures.wait(futures)
+                    
+        for result in alloutputs:
+            
+                outputfile0 = result
+                cmd2 = f"cat {outputfile0} >> {outputfile}"
+                os.system(cmd2)
+            
+            
+def findbreaks(inputfile, outputfile):
+    
+        names = []
+        contigs = cl.defaultdict(list)
+        name_tocontig = cl.defaultdict(list)
+        index = -1
+        with open(inputfile, mode = 'r') as f:
+            
+                for line in f:
+                    
+                        if line.startswith(">"):
+                            
+                                index += 1
+                                name, locus = line[1:].split()[:2]
+                                names.append(name)
+                                exon = line.split()[-2]
+                            
+                                strd = "+"
+                                contig, region = locus.split(":")
+                                if region[-1] in ["+","-"]:
+                                        region = region[:-1]
+                                        strd = locus[-1]
+                                    
+                                region = region.split("-")
+                                region = [min(int(region[0]), int(region[1])), max(int(region[0]), int(region[1])), strd, index]
+                            
+                                contigs[contig].append(region)
+                            
+        pairs = []        
+        new_contigs = cl.defaultdict(list)
+        for contig, regions in contigs.items():
+            
+                regions_sort = sorted(regions)
+            
+                lastend = regions_sort[0]
+            
+                pairs.append([contig, lastend[2], max(0, lastend[0] - cutoffdistance), lastend[1], names[lastend[-1]] ])
+            
+                for region in regions_sort[1:]:
+                        if max(region[0],region[1], lastend[0],lastend[1]) - min(region[0],region[1], lastend[0],lastend[1]) - abs(region[1]-region[0] ) - abs(lastend[1] - lastend[0]) < cutoffdistance:
+                            
+                                strd = region[2] if region[1] - region[0] >= lastend[1] - lastend[0] else lastend[2]
+                            
+                                pairs.append([contig, strd,min(region[0],region[1], lastend[0],lastend[1]), max(region[0],region[1], lastend[0],lastend[1]), ";".join([names[region[-1]], names[lastend[-1]]])])
+                            
+                        lastend = region
+                    
+                pairs.append([contig, lastend[2],  lastend[0], lastend[1] + cutoffdistance, names[lastend[-1]] ])    
+            
+            
+        with open(outputfile, mode = 'w') as w:
+                for pair in pairs:
+                        w.write("{}\t{}\t{}\t{}\t{}\n".format(pair[0],pair[1],pair[2],pair[3],pair[4]))
+                    
+                    
+        return pairs
+
+
+def findstartend(cigar_str):
+    
+        if not cigar_str:
+                return 0,0
+    
+        cigars = re.findall(r'\d+[M=XIHD]', cigar_str)
+    
+        lastposi=0
+        lsize = 0
+        rsize = 0
+        for i,cigar in enumerate(cigars):
+            
+                curr_size = int(cigar[:-1])
+                char = cigar[-1]
+            
+                if (char == '=' or char ==  'M' or char == 'I' ) and curr_size>50:
+                        break
+                if char in ['D','H','X','M','=']:
+                        lsize += curr_size
+                    
+        for i,cigar in enumerate(cigars[::-1]):
+            
+                curr_size = int(cigar[:-1])
+                char = cigar[-1]
+            
+                if (char == '=' or char ==  'M' or char == 'I' ) and curr_size>50:
+                        break
+                if char in ['D','H','X','M','=']:
+                        rsize += curr_size
+                    
+        return lsize,rsize
+
+
+def qposi_togposi(cigar_str, find_qposes):
+    
+        l = len(find_qposes)
+        if l == 0:
+            
+                return []
+    
+        allcigars = re.findall(r'[><][^><]+', cigar_str)
+    
+    
+        curr_rposi = 0
+        curr_qposi = 0
+        new_rposi = 0
+        new_qposi = 0
+    
+        curr_strd = 1
+        curr_size = 0
+    
+        find_qposes = find_qposes + [0]
+        find_qpos_index = 0
+        find_qpos = find_qposes[0]
+        find_rposes = []
+    
+        for cigars in allcigars:
+            
+                curr_strd = 1 if cigars [0]=='>' else -1
+            
+                curr_posi, cigar  = cigars.split(":")
+            
+                curr_rposi,curr_qposi = curr_posi[1:].split("_")
+            
+                curr_rposi,curr_qposi = int(curr_rposi), int(curr_qposi)
+            
+                cigars = re.findall(r'\d+[M=XIHD]', cigars)
+            
+                new_rposi, new_qposi = curr_rposi,curr_qposi
+            
+                for cigar in cigars:
+                    
+                        curr_size = int(cigar[:-1])
+                        char = cigar[-1]
+                    
+                        if char == '=' or char ==  'M':
+                            
+                                new_rposi = curr_rposi + curr_strd * curr_size
+                                new_qposi = curr_qposi + curr_size
+                            
+                        elif char == 'I':
+                            
+                                new_qposi = curr_qposi + curr_size 
+                            
+                        elif char == 'D' or char == 'H':
+                            
+                                new_rposi = curr_rposi + curr_strd * curr_size
+                            
+                        elif char == 'X':
+                            
+                                new_rposi = curr_rposi + curr_strd * curr_size
+                                new_qposi = curr_qposi + curr_size
+                            
+                        elif char == 'S':
+                            
+                                if curr_qposi == 0:
+                                        curr_qposi = curr_size
+                                    
+                                curr_size = 0
+                                continue
+                    
+                        while find_qpos_index<l and find_qpos <= new_qposi:
+                            
+                            
+                                if char == '=' or char ==  'M' or char =='X' :
+                                    
+                                        find_rposes.append(curr_rposi + curr_strd * (find_qpos-curr_qposi))
+                                else:
+                                    
+                                        find_rposes.append(curr_rposi)
+                                    
+                                find_qpos_index += 1
+                                find_qpos = find_qposes[find_qpos_index]
+                            
+                        if find_qpos_index == l:
+                                return find_rposes
+                    
+                        curr_size = 0
+                        curr_rposi = new_rposi
+                        curr_qposi = new_qposi
+                    
+                    
+        while find_qpos_index<l:
+            
+                find_qpos_index += 1
+                find_rposes.append(curr_rposi)
+            
+        return find_rposes
+
+
+def gposi_toqposi(cigar_str, find_rposes):
+    
+        l = len(find_rposes)
+        if l == 0:
+            
+                return []
+    
+        allcigars = re.findall(r'[><][^><]+', cigar_str)
+        allcigars = sorted(allcigars, key = lambda x: int(x.split(":")[0].split("_")[0][1:]))
+    
+    
+        find_rposes = find_rposes + [0]
+        curr_rposi = 0
+        curr_qposi = 0
+        new_rposi = 0
+        new_qposi = 0
+    
+        curr_size = 0
+        curr_strd = 1
+        find_rpos_index = 0
+        find_rpos = find_rposes[0]
+        find_qposes = []
+    
+        for cigars in allcigars:
+            
+                new_strd = 1 if cigars[0]=='>' else -1
+                new_posi, cigars  = cigars.split(":")
+            
+                new_rposi,new_qposi = new_posi[1:].split("_")
+            
+                new_rposi,new_qposi = int(new_rposi), int(new_qposi)
+            
+                rsize = sum([int(x[:-1]) for x in re.findall(r'\d+[M=XHD]', cigars)]+[0])
+                qsize = sum([int(x[:-1]) for x in re.findall(r'\d+[M=XI]', cigars)]+[0]) 
+            
+                if new_strd == 1:
+                        cigars = re.findall(r'\d+[M=XHDI]', cigars)
+                    
+                else:
+                        cigars = re.findall(r'\d+[M=XHDI]', cigars)[::-1]
+                        new_rposi -= sum([int(x[:-1]) for x in cigars if x[-1] in "M=XHD"]+[0])
+                        new_qposi += sum([int(x[:-1]) for x in cigars if x[-1] in "M=XI"]+[0])
+                    
+                    
+                    
+                while find_rpos_index<l and find_rpos <= new_rposi + (1-curr_strd)-1//2 :
+                    
+                        if abs(find_rpos - curr_rposi) < abs(find_rpos - new_rposi):
+                                find_qposes.append(curr_qposi)
+                        else:
+                                find_qposes.append(new_qposi)
+                            
+                        find_rpos_index += 1
+                        find_rpos = find_rposes[find_rpos_index]
+                    
+                if find_rpos_index == l:
+                        return find_qposes
+            
+                curr_strd, curr_rposi, curr_qposi = new_strd, new_rposi, new_qposi
+            
+            
+                for cigar in cigars:
+                    
+                        curr_size = int(cigar[:-1])
+                        char = cigar[-1]
+                    
+                        if char == '=' or char ==  'M':
+                            
+                                new_rposi = curr_rposi + curr_size 
+                                new_qposi = curr_qposi + curr_size * curr_strd
+                        elif char == 'I':
+                            
+                                new_qposi = curr_qposi + curr_size * curr_strd
+                            
+                        elif char == 'D' or char == 'H':
+                            
+                                new_rposi = curr_rposi + curr_size 
+                            
+                        elif char == 'X':
+                            
+                                new_rposi = curr_rposi + curr_size 
+                                new_qposi = curr_qposi + curr_size * curr_strd
+                            
+                            
+                        elif char == 'S':
+                            
+                                if curr_qposi == 0:
+                                        curr_qposi = curr_size 
+                                    
+                                curr_size = 0
+                                continue
+                    
+                        while find_rpos_index<l and find_rpos <= new_rposi + (1-curr_strd)-1//2 :
+                            
+                            
+                                if char == '=' or char ==  'M' or char =='X' :
+                                    
+                                        find_qposes.append(curr_qposi + curr_strd * (find_rpos-curr_rposi))
+                                else:
+                                    
+                                        find_qposes.append(curr_qposi)
+                                    
+                                find_rpos_index += 1
+                                find_rpos = find_rposes[find_rpos_index]
+                            
+                        if find_rpos_index == l:
+                                return find_qposes
+                    
+                        curr_size = 0
+                        curr_rposi = new_rposi
+                        curr_qposi = new_qposi
+                    
+                    
+        while find_rpos_index<l:
+            
+                find_rpos_index += 1
+                find_qposes.append(curr_qposi)
+            
+        return find_qposes
+
+
+
+def getspan_ongraph(path, cigar):
+    
+        span = []
+        cigar = cigar.translate(str.maketrans('', '', 'ATCGatcgNn-'))
+        cigars = re.findall(r'[><][^><]+', cigar)
+        pathes = re.findall(r'[><][^<>]+',path)
+    
+    
+        newcigars = cl.defaultdict(str)
+        lcut, rcut  =0 ,0
+        rposi = 0
+        for cigarstr in cigars:
+            
+                thename,thecigar = cigarstr.split(":")
+            
+                asize = sum([int(x[:-1]) for x in re.findall(r'\d+[M=]', thecigar)]+[0])
+            
+                rsize = sum([int(x[:-1]) for x in re.findall(r'\d+[M=XHD]', thecigar)]+[0])
+            
+                qsize = sum([int(x[:-1]) for x in re.findall(r'\d+[M=XI]', thecigar)]+[0])
+            
+                newcigars[thename[1:]] = (thecigar, rposi, asize, rsize, qsize)
+            
+                if asize >= 1000:
+                    
+                        lcut, rcut = findstartend(thecigar)
+                        if lcut+rcut > rsize:
+                                continue
+                    
+                        if len(span) and rposi + lcut - span[-1][1] < 2000:
+                                span[-1][1] = rposi+rsize - rcut
+                        else:
+                                span.append([rposi+ lcut,rposi+rsize- rcut])
+                            
+                rposi += rsize
+            
+            
+        qposi = 0
+        cigar_order = []
+        reserved = ""
+        reserved_size = 0
+        lastaligned = -1
+        for apath in pathes:
+            
+                thecigar, rposi, asize, rsize, qsize = newcigars[apath[1:]]
+            
+                if asize < 1000:
+                    
+                        thecigar = "{}H".format(rsize)
+                    
+                        if qsize >0:                
+                                if lastaligned >= 0:
+                                        cigar_order[lastaligned] += "{}I".format(qsize)
+                                        qposi += qsize
+                                else:
+                                        reserved = "{}I".format(qsize)
+                                        reserved_size = qsize
+                else:
+                        if apath.startswith("<"):
+                            
+                                thecigar = "".join(re.findall(r'\d+[M=XHDI]', thecigar)[::-1])
+                                rposi += rsize
+                            
+                        if len(reserved):
+                                thecigar = reserved + thecigar
+                                reserved = ""
+                                qsize += reserved_size
+                                reserved_size = 0
+                            
+                        cigar_order.append(apath[0]+str(rposi)+"_"+str(qposi )+":"+thecigar)
+                        lastaligned = len(cigar_order) - 1
+                    
+                        qposi += qsize 
+                    
+                    
+        newcigars= "".join(cigar_order)
+    
+        return "".join(newcigars), span
+
+def readcontigsinfo(inputfile, breakfile):
+    
+        genetoscaff = dict()
+        with open(inputfile, mode = 'r') as f:
+                for line in f:
+                        if line.startswith(">"):
+                                line = line.strip().split() + ["",""]
+                                name = line[0][1:]
+                                locus = line[1]
+                                strd = locus[-1]
+                                contig, coordi = locus.split(":")
+                                if coordi[-1] in ['-','+']:
+                                        coordi = coordi[:-1]
+                                    
+                                start, end = map(int, coordi.split("-"))
+                                start, end = min(start,end), max(start,end)
+                                genetoscaff[name] = [contig, strd, start, end, line[2], line[3]]
+                            
+                            
+        locuslocations = dict()
+        genetolocus = cl.defaultdict(list)
+    
+        with open(breakfile, mode = 'r') as f:
+            
+                scarf_index = 0
+                lastend = -10000
+                laststart = -10000
+                lastgenes = set()
+                for index, line in enumerate(f):
+                    
+                        if line.startswith('>') == False:
+                                continue
+                    
+                        line = line.strip().split()
+                        locusname, region = line[0][1:], line[1]
+                    
+                        contig, region = region.split(":")
+                    
+                        strd, start, end = region[-1], region[:-1].split("-")[0], region[:-1].split("-")[1]
+                    
+                        start, end = min(int(start), int(end)), max(int(start), int(end))
+                    
+                        if start > lastend :
+                                scarf_index += 1
+                        lastend = end
+                    
+                        names = line[-1].split(";")
+                    
+                        lastgenes = set(names)
+                    
+                        if len(names) == 1:
+                                pass 
+                            
+                        if "NC_0609" in contig:
+                                locusname = "Ref_"+locusname
+                            
+                        locuslocations[locusname ] = [contig+"_"+str(scarf_index), strd, start, end]
+                    
+                    
+                        for name in names:
+                                if strd == '+':
+                                        qstart = genetoscaff[name][2] - start
+                                        qend = genetoscaff[name][3] - start
+                                else:
+                                        qstart = end - genetoscaff[name][3]
+                                        qend = end  - genetoscaff[name][2]
+                                        qstart,qend = min(qstart,qend), max(qstart,qend)
+                                    
+                                genetolocus[name].append([locusname, qstart, qend] )
+                                genetoscaff[name][0] = contig+"_"+str(scarf_index)
+                            
+                            
+        return genetoscaff, genetolocus, locuslocations
+
+
+def combinebreaks(gbreaks):
+            
+        breaks = [x for y in gbreaks.values() for x in y]
+        names = [name for name,y in gbreaks.items() for x in y]
+    
+        all_coordinates = [x[0] for y in breaks for x in y[:2]]
+    
+        sort_index = sorted(range(len(all_coordinates)), key = lambda x: all_coordinates[x])
+    
+        break_groups = []
+        break_group = []
+    
+        break_group_index = set([])
+        break_group_indexs = []
+    
+        last_coordinate = 0
+        for index in sort_index:
+            
+                coordinate = all_coordinates[index]
+            
+                if coordinate - last_coordinate < 300:
+                    
+                        break_group.append(coordinate)
+                        break_group_index.add(names[index//2])
+                    
+                else:
+                    
+                        break_groups.append(break_group)
+                        break_group_indexs.append(break_group_index)
+                    
+                        break_group = [coordinate]
+                        break_group_index = set([names[index//2]])
+                    
+                last_coordinate = coordinate
+            
+        break_groups.append(break_group)
+        break_group_indexs.append(break_group_index)
+    
+        extendgroup = cl.defaultdict(set)
+    
+    
+        return break_groups, break_group_indexs, extendgroup
+
+
+def readlineargraph(linearfile):
+    
+        contigspan = dict()
+        pathsize = dict()
+        graphinfo = dict()
+        with open(linearfile, mode = 'r') as f:
+            
+                for line in f:
+                    
+                        if line.startswith("S") :
+                                line = line.split()
+                                name, size = "_".join(line[1].split("_")[1:]), int(line[4].split(":")[-1])
+                                pathsize[name] = size
+                            
+                        else:
+                                line = line.strip().split()
+                            
+                                newcigar, span = getspan_ongraph(line[3],line[5])
+                            
+                                graphinfo[line[1]] = newcigar
+                            
+                                contigspan[line[1]] = span
+                            
+                                    
+        return pathsize, graphinfo, contigspan
+
+
+
+def applybreaks(oldbreaks, addbreaks, removebreaks, allcigars, break_uniformed):
+    
+        results = dict()
+        for locusname, oldbreak in oldbreaks.items():
+            
+                removerange = [ x for y in removebreaks[locusname] for x in [y-1000, y+1000]]
+           
+                oldbreak_ = [x for y in list(oldbreak) for x in y] 
+                breaks =  sorted([x[0] for x in oldbreak_] + list(addbreaks[locusname]))
+
+                loldbreaks = len(oldbreak_) 
+                lremove = len(removerange)
+                allbreaks = removerange + breaks
+            
+                allbreaks_sort = [(i,value) for i, value in sorted(enumerate(allbreaks), key=lambda x: x[1])]
+            
+            
+                lastcoordi = -100000
+                removerange_cover = 0
+                removelist = set()
+                for sortindex,(index,coordi) in enumerate(allbreaks_sort):
+                    
+                        if index < lremove:
+                                if index % 2:
+                                        removerange_cover -= 1
+                                else:
+                                        removerange_cover += 1
+                        else:
+                                distance = coordi - lastcoordi 
+                                if sortindex and distance > 100000:
+                                        continue
+                                if sortindex and distance < 10000:
+                                        removelist.add(index)
+                                else:
+                                        if removerange_cover > 0:
+                                                removelist.add(index)
+                                            
+                        lastcoordi = coordi
+                    
+                oldbreak_q = [x[1] for i,x in enumerate(oldbreak_) if i not in removelist]
+                
+                newaddbreak = [x for i,x in enumerate(breaks) if i not in removelist and i >= loldbreaks]
+                
+                newaddbreak_q = gposi_toqposi(allcigars[locusname], newaddbreak)
+           
+                newaddbreak_q = [x for x in newaddbreak_q if min([abs(x-y) for y in oldbreak_q] + [100000]) > 1000]
+
+                breaks_q = sorted(oldbreak_q + list(newaddbreak_q))
+            
+                        
+                if len(breaks_q) <= 1:
+                        breaks_q = [x[1] for y in oldbreak for x in y]
+                    
+                results[locusname] = breaks_q
+            
+        return results
+
+
+
+
+def filterbreaks(gbreaks, break_contigs, break_count, contigspans):
+    
+        for name, breaks in contigspans.items():
+            
+                pass
+            
+            
+        allcontigs_breaks = [x  for y in gbreaks.values() for x in [ y[0][0], y[-1][1]]]
+    
+        allcontigs_spans = [z  for y in contigspans.values() for x in y for z in [x[0]-100,x[1]+100]]
+    
+        allnames =  [z  for name, y in contigspans.items() for x in y for z in [name,name]] 
+    
+        allbreaks = list(break_count.keys())
+    
+        break_count_corr = cl.defaultdict(int)
+    
+        l1, l2 = len(allcontigs_breaks), len(allcontigs_spans) + len(allcontigs_breaks)
+    
+        allcoordis = allcontigs_breaks + allcontigs_spans+ allbreaks
+    
+        allcoordis_sort = sorted(list(range(len(allcoordis))), key = lambda x: allcoordis[x])
+    
+        locus_span = 0
+        segment_span = 0
+    
+        locus_lastposi = cl.defaultdict(int)
+        locus_addbreaks = cl.defaultdict(set)
+        locus_removebreaks = cl.defaultdict(set)
+        allbreaks_found = []
+        current_names = set()
+        lastbreak = 0
+    
+        for sortindex, index in enumerate(allcoordis_sort):
+            
+                if index < l1:
+                        if index % 2 == 0:
+                                locus_span += 1
+                        else:
+                                locus_span -= 1
+                elif index < l2:
+                        if index % 2 == 0:
+                                segment_span += 1
+                                current_names.add(allnames[index-l1])
+                        else:
+                                segment_span -= 1
+                                current_names.remove(allnames[index-l1])
+                            
+                else:
+                        coordi = allcoordis[index]
+                    
+                        common = break_contigs[coordi] & set(current_names)
+                        totalbreak = len(common)
+                        totalcontigs = len(current_names)
+                    
+                        ifref = any(x for x in common if x.startswith('Ref_'))
+                    
+                        if ifref == 0:
+                                ifref = -1 if any(x for x in current_names if x.startswith('Ref_')) else 0
+                            
+                        allbreaks_found.append([coordi,totalbreak, totalcontigs, ifref, set(current_names) ^ common , common]) 
+                    
+        allbreaks_foundsort = sorted(allbreaks_found, key = lambda x: (x[3],x[1]/max(1,x[2])), reverse=1)
+    
+        existingbreak = []
+    
+        for abreak in allbreaks_foundsort:
+            
+                coordi, totalbreak, totalcontigs, ifref, uncommon, common = abreak
+            
+                mindis = min([abs(x-coordi) for x in existingbreak]+[10000000])
+            
+                ifcut = 0 
+                if mindis < 10000:
+                        ifcut = 0 
+                    
+                elif ifref:
+                        ifcut = 1 if ifref > 0 else 0
+                    
+                elif mindis > 100000:
+                        ifcut = 1
+                    
+                elif totalbreak > totalcontigs//2:
+                        ifcut = 1 
+                else:
+                        ifcut = 0
+                    
+                if ifcut:
+                        existingbreak.append(coordi)
+                        for name in uncommon:
+                                locus_addbreaks[name].add(coordi)
+                else:
+                        for name in common:
+                                locus_removebreaks[name].add(coordi)
+                            
+                   
+        return locus_addbreaks, locus_removebreaks
+
+
+def overlapsegments(oldseg, newseg):
+    
+    
+        return overlap
+
+
+
+        
+def breaks_ongraph(genetolocus, graphinfo, contigspan):
+    
+        gbreaks = cl.defaultdict(list)
+    
+        segmentinfo =  cl.defaultdict(list)
+        for name, infos in genetolocus.items():
+            
+                for info in infos:
+                    
+                        locus,start,end = info
+                    
+                        if locus.startswith("Ref_"):
+                                graphinfo[locus] = graphinfo[locus[4:]]
+                            
+                        gstart,gend = qposi_togposi(graphinfo[locus], [start,end-1])
+                    
+                        gbreaks[locus].append([(gstart,start),(gend,end-1)])
+                        
+                        segmentinfo[locus].append([gstart,gend, name])
+                    
+                            
+        gbreaks = {name:sorted([sorted(x) for x in values]) for name, values in gbreaks.items()}
+    
+        break_groups, break_group_names, extendgroup = combinebreaks(gbreaks)
+   
+        break_count = cl.defaultdict(int)
+        break_uniformed = dict()
+        break_contigs = cl.defaultdict(set)
+        for group,names in zip(break_groups,break_group_names):
+            
+                if len(group) == 0:
+                        continue
+                themedian = int(np.median(group))
+                break_contigs[themedian] = names
+                break_count[themedian] = len(extendgroup[themedian])
+               #print(themedian, len(extendgroup[themedian]), len(group))
+                for coordi in group:
+                    
+                        break_uniformed[coordi] = themedian
+                    
+                    
+        gbreaks_uniformed = {locus: sorted( [[break_uniformed[x[0][0]], break_uniformed[x[1][0]]] for x in y ]) for locus,y in gbreaks.items()}
+    
+        addbreaks, removebreaks = filterbreaks(gbreaks_uniformed, break_contigs, break_count, contigspan)
+    
+        finalbreaks = applybreaks(gbreaks, addbreaks, removebreaks, graphinfo, break_uniformed)
+    
+    
+        return gbreaks, finalbreaks
+
+def annotate_regions(breaksoncontigs, locuslocations, genetoscaff):
+    
+        geneoncontigs = cl.defaultdict(list)
+        for genename, info in genetoscaff.items():
+                geneoncontigs[info[0]].append(info[2:]+[genename])
+            
+        regions = []
+        for contig, breaks in breaksoncontigs.items():
+            
+                segments = [[breaks[i],breaks[i+1]] for i in range(len(breaks) - 1)]
+            
+                oldsegments = geneoncontigs[contig]
+                for segment in segments:
+                    
+                        overlap = sorted([(max(x[1],segment[1]) - min(x[0],segment[0]) - (x[1] - x[0]) - (segment[1] - segment[0]), x) for i,x in enumerate(oldsegments)], reverse = 1)[0]
+                        
+                        regions.append(["_".join(contig.split("_")[:-1]), segment[0], segment[1]] + overlap[1][2:])
+                    
+                    
+        new_regions = []
+        haplo_counter = cl.defaultdict(int)
+        for region in regions:
+            
+                contig, start, end, ifexon, mapinfo,oldname = region
+            
+                haplo = "_".join(contig.split("#")[:2]) if "#" in contig else "CHM13_h1" if "NC_0609" in contig else "HG38_h1"
+            
+                haplo_counter[haplo] += 1
+            
+                newname = "_".join(oldname.split("_")[:-1]) +"_"+ str(haplo_counter[haplo])
+            
+                #header = "{}\t{}:{}-{}\t{}\t{}".format(newname, contig, start, end, ifexon, mapinfo  )
+            
+                new_regions.append([newname,  contig, start, end, ifexon, mapinfo])
+            
+        return new_regions
+
+def coordinate_uniform(cbreaks_sort):
+    
+        uniform_coordis = []
+    
+        currbreaks =  []
+        lastbreak = -1000
+        for coordi in cbreaks_sort:
+                if (coordi - lastbreak) < 1000:
+                        currbreaks.append(coordi)
+                else:
+                        if len(currbreaks):
+                                uniform = cl.Counter(currbreaks).most_common(1)[0][0]
+                                uniform_coordis.extend([uniform] * 1)
+                            
+                        currbreaks = [coordi]
+                        
+                lastbreak = coordi
+            
+        if len(currbreaks):
+                uniform = cl.Counter(currbreaks).most_common(1)[0][0]  
+                uniform_coordis.extend([uniform] * 1)
+            
+        return uniform_coordis
+
+def locatebreaksoncontigs(breaksonlocus, locuslocations, oldbreaks):
+    
+        locusnamecontig = cl.defaultdict(list)
+        locussoncontig = cl.defaultdict(list)
+        breaksoncontig = cl.defaultdict(list)
+        for locusname,qbreaks in breaksonlocus.items():
+            
+                contig, strd, lstart, lend = locuslocations[locusname]
+            
+                if strd == "+":
+                        lbreaks = [lstart + qbreak for qbreak in qbreaks]
+                else:
+                        lbreaks = [lend - qbreak for qbreak in qbreaks]
+                    
+                breaksoncontig[contig].extend(lbreaks)
+                locussoncontig[contig].extend([lstart, lend])
+                locusnamecontig[contig].extend(locusname)
+            
+        results = cl.defaultdict(list)
+        for scafford, cbreaks in breaksoncontig.items():
+                    
+                cbreaks_sort_index = sorted(range(len(cbreaks)), key = lambda x: cbreaks[x])
+            
+                cbreaks_sort = [cbreaks[x] for x in cbreaks_sort_index]
+            
+                cbreaks_sort_uniform = coordinate_uniform(cbreaks_sort)
+            
+                results[scafford] = cbreaks_sort_uniform 
+            
+        return results
+
+def uniformbreaks(inputfile, outputfile):
+    
+        breakfile = outputfile+"_breaks.txt"
+        graphref = outputfile+"_breaks.txt.fasta"
+    
+        linearfile = outputfile +"_breaks.txt.fasta_lineargraph.gaf"
+    
+        genetoscaff, genetolocus, locuslocations = readcontigsinfo(inputfile, graphref)
+    
+        pathsize, graphinfo, contigspan= readlineargraph(linearfile)
+    
+        oldbreaks, newbreaksonlocus = breaks_ongraph(genetolocus, graphinfo, contigspan)
+    
+        breaksoncontigs = locatebreaksoncontigs(newbreaksonlocus, locuslocations, oldbreaks)
+    
+        regions = annotate_regions(breaksoncontigs,  locuslocations, genetoscaff)
+    
+        return regions
+
+def main(args):
+    
+        #os.system("python {}/exambreaks.py -i {} -n {} -o {} ".format(script_folder,args.input, args.norm, args.input))
+    
+        if len(args.folder)==0: 
+                folder = args.input +  datetime.datetime.now().strftime("%y%m%d_%H%M%S/").replace("%","_")
+            
+                os.system("rm -rf {} || true".format(folder))
+                os.system("mkdir {} || true".format(folder))
+            
+        else:
+                folder = args.folder
+                os.system("mkdir {} || true".format(folder))
+            
+        graphref = args.output+"_breaks.txt.fasta"
+    
+        ###pairs = findbreaks(args.input, args.output+"_breaks.txt")
+    
+        ###
+        ##makenewfasta(args.output+"_breaks.txt", args.query, args.output+"_breaks.txt.fasta", folder ,args.threads)
+    
+        if len(args.kmer):
+                pass
+                ##os.system("python {}/kmerstrd.py -i {} -k {} -o {}".format(script_folder,graphref, args.kmer, graphref+"_"))
+                ##os.system("mv {} {} || true".format(graphref+"_", graphref))
+            
+        ##makegraph(args.output+"_breaks.txt.fasta", folder, args.threads)
+            
+        regions = uniformbreaks(args.input, args.output)
+    
+        makenewfasta2(regions, args.query, args.output, folder, args.threads)
+    
+        if len(args.folder)==0:
+                os.system("rm  -rf {} || true".format(folder))
+            
+        """
+        if len(args.kmer):
+                
+                os.system("python {}/kmerstrd.py -i {} -k {} -o {}".format(script_folder,args.output, args.kmer, args.output+"_"))
+                os.system("mv {} {} || true".format(args.output+"_", args.output))
+        
+        if len(args.folder)==0:
+                os.system("rm  -rf {} || true".format(folder))
+        """
+            
+            
+            
+def run():
+        """
+                Parse arguments and run
+        """
+        parser = argparse.ArgumentParser(description="")
+        parser.add_argument("-i", "--input", help="path to input data file",dest="input", type=str, required=True)
+        parser.add_argument("-n", "--norm", help="path to input data file",dest="norm", type=str, required="")
+        parser.add_argument("-k", "--kmer", help="path to input data file",dest="kmer", type=str, default="")
+        parser.add_argument("-o", "--output", help="path to output file", dest="output",type=str, required=True)
+        parser.add_argument("-t", "--threads", help="path to output file", dest="threads",type=int, default = 1)
+        parser.add_argument("-q", "--query", help="path to output file", dest="query",type=str, default = True)
+        parser.add_argument("-d", "--folder", help="path to output file", dest="folder",type=str, default = "")   
+    
+        parser.set_defaults(func=main)
+        args = parser.parse_args()
+        args.func(args)
+    
+    
+if __name__ == "__main__":
+        run()

@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+
+import pandas as pd
+import os 
+import re
+import argparse
+import sys
+import multiprocessing as mul
+import collections as cl
+
+def blastn(fastafile, blastndb):
+   
+    #script_path = os.path.dirname(os.path.abspath(__file__))
+
+    cmd = "blastn -query {}  -db {}.fa_db -perc_identity 90 -dust yes -lcase_masking  -outfmt 17 -num_threads 4  -out {}_blast.out || true".format(fastafile, blastndb,fastafile)
+
+    
+    os.system(cmd)
+
+    cmd = "blastn -query {}  -db {}_exons.fa_db -perc_identity 90  -outfmt 17 -num_threads 4  -out  - >> {}_blast.out  || true".format(fastafile, blastndb,fastafile)
+
+    os.system(cmd)
+
+    #cmd = "python {}/blastntopaf.py -i {}_blast.out -q {} > {}.paf  ".format(script_path, fastafile,fastafile, fastafile) 
+
+    #os.system(cmd)
+
+    #cmd = " python {}/filter_alignment.py -i {}.paf -r {} -o {}.paf_filter.PAF || true".format(script_path, fastafile, blastndb+".fa" , fastafile)
+
+    #os.system(cmd)
+
+
+def readfile(querypath):
+    
+    read = ""
+    header = ""
+    query = {}
+    with open(querypath, mode = 'r') as f:
+        for line in f:
+            if len(line) == 0:
+                continue
+            if line[0]==">":
+                query[header] = read
+                read = ""
+                header = line[1:].split()[0]
+            else:
+                read+=line.strip()
+                
+    query[header] = read
+    read = ""
+    
+    
+    return query
+
+
+def Ngap_trim(start, end, seq):
+    
+    beginN = len(re.findall(r'^N+',seq))
+    endN = len(re.findall(r'N+$',seq))
+    
+    seq = seq[beginN:(len(seq)-endN)]
+    
+    return beginN, endN, seq
+
+def querycontig_overlap(allaligns, allow_gap = 0):
+    
+    all_coordinates = [int(x) for y in allaligns for x in y[:2]]
+    
+    sort_index = sorted(range(len(all_coordinates)), key = lambda x: all_coordinates[x])
+    
+    allgroups = []
+    current_group = set([])
+    current_group_size = 0 
+    current_group_start = 0
+    allgroups_sizes = []
+    
+    number_curr_seq = 0
+    coordinate = 0
+    
+    last_coordinate = -allow_gap-1
+    for index in sort_index:
+        
+        coordinate = all_coordinates[index]
+        
+        if index %2 == 0 :
+            
+            number_curr_seq += 1
+            
+            if number_curr_seq == 1:
+                
+                current_group_start = int(coordinate)
+                
+                if coordinate - last_coordinate>allow_gap :
+                    allgroups_sizes.append(current_group_size)
+                    allgroups.append(current_group)
+                    
+                    current_group = set([])
+                    current_group_size = 0
+                    
+                    
+            current_group.add(index//2)
+            
+        else:
+            
+            number_curr_seq -= 1
+            
+            if number_curr_seq == 0:
+                
+                current_group_size += coordinate - current_group_start  
+                
+        last_coordinate = coordinate
+        
+        
+    allgroups_sizes.append(current_group_size)
+    allgroups.append(current_group)
+    
+    allgroups_sizes = allgroups_sizes[1:]   
+    allgroups = allgroups[1:]
+    
+    results = []
+    for i,group in enumerate(allgroups):
+        
+        aligns = [allaligns[x] for x in group]
+        
+        coordinates = [x for y in aligns for x in y[:2]]
+        start = min(coordinates)
+        end = max(coordinates)
+        
+        start = max(0,start-allow_gap//2)
+        end = end+allow_gap//2
+        
+        results.append([start, end])
+        
+        
+    return results
+
+def process(inputpath, outputpath, query):
+
+    assert(os.path.exists(inputpath))   
+ 
+    try:
+        table = pd.read_csv(inputpath, header = None , sep = "\t")
+    except:
+        print("warnning, no kmer found in ", inputpath)
+        return
+    
+    ncol = len(table.columns.values.tolist())
+    
+    eachcontig = cl.defaultdict(list)
+    for index, row in table.iterrows():
+        
+        contig = row.iat[0].strip().split()[0]
+        
+        eachcontig[contig].append(index)
+        
+    allqueryloci = []
+    
+    for contig, indexes in eachcontig.items():
+        
+        subdata = table.iloc[indexes]
+        
+        usecols = subdata[[ncol-2,ncol-1]].values.tolist()
+        
+        loci = querycontig_overlap(usecols, 20000)
+        
+        loci = [[contig]+x for x in loci]
+        
+        allqueryloci.extend(loci)
+        
+    try:
+        os.remove(outputpath)   
+    except:
+        pass
+        
+    write = open(outputpath,mode = "w")
+    for i,raw in enumerate(allqueryloci):
+        
+        contig, start, end = raw
+        
+        samplename = "_h".join(contig.split("#")[:2])   
+        
+        seq = query[contig.split()[0]][start:end]
+        
+        
+        title = ">{}_{}_{}\t{}:{}-{}".format(contig, start , end , contig, start , end )
+        
+        write.write(title+"\n")
+        write.write(seq+"\n")
+        
+    write.close()
+    
+def main(args):
+    
+    query = readfile(args.query)
+    
+    allblocks = [x for x in os.listdir(args.input) if os.path.isdir(args.input+"/"+x)]
+   
+    for block in allblocks:
+        
+        bedfile = "{}/{}/hotspots/{}_hotspot.txt".format(args.input,block,args.qname) 
+        
+        blastndb = "{}/{}/{}".format(args.input,block, block)
+        
+        fastafile = bedfile + ".fa"
+       
+        if not args.undo and os.path.isfile(fastafile+".paf_filter.PAF") and os.stat(fastafile+".paf_filter.PAF").st_size > 5 and os.path.isfile(fastafile+".paf") and os.stat(fastafile+".paf").st_size > 5 and os.path.isfile(fastafile+"_title.txt") and os.stat(fastafile+"_title.txt").st_size > 5 :
+            pass
+        else:
+            process(bedfile, fastafile, query)
+
+            if not args.undo and os.path.isfile(fastafile+"_blast.out") and os.stat(fastafile+"_blast.out").st_size > 5:
+                pass
+            else:
+                blastn(fastafile, blastndb)
+    
+            script_path = os.path.dirname(os.path.abspath(__file__))
+ 
+            cmd = "python {}/blastntopaf.py -i {}_blast.out -q {} > {}.paf  ".format(script_path, fastafile,fastafile, fastafile)
+            os.system(cmd)
+            
+            cmd = " python {}/filter_alignment.py -i {}.paf -r {} -o {}.paf_filter.PAF || true".format(script_path, fastafile, blastndb+".fa" , fastafile)
+            os.system(cmd)
+            
+ 
+            os.system("( cat {} | grep \"^>\" > {}_title.txt ) || true".format(fastafile,fastafile))
+
+            os.system (" touch {}.paf || true ".format(fastafile))
+            os.system (" touch {}.paf_filter.PAF || true ".format(fastafile))
+            os.system("touch {} || true".format(fastafile+"_blast.out")) 
+
+            os.system("rm {} || true".format(fastafile))
+        
+        
+def run():
+    """
+        Parse arguments and run
+    """
+    parser = argparse.ArgumentParser(description="program determine psuedogene")
+
+    parser.add_argument("-i", "--input", help="input folder", dest="input", type=str, default = '')
+    parser.add_argument("-q", "--query", help="path to output file", dest="query", type=str, required=True)
+    parser.add_argument("-n", "--qname", help="path to output file", dest="qname", type=str, required=True)
+    parser.add_argument("-u", "--undo", help="path to output file", dest="undo", type=int, default = 0)
+    
+    parser.set_defaults(func=main)
+    args = parser.parse_args()
+    args.func(args)
+    
+    
+if __name__ == "__main__":
+    run()
