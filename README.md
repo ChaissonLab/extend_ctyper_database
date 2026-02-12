@@ -1,4 +1,4 @@
-This is for the one-time installation of the ctyper database on Azure Cyclecloud clusters.
+sThis is for the one-time installation of the ctyper database on Azure Cyclecloud clusters.
 
 
 ## 1. Preliminaries; cyclecloud setup.
@@ -60,7 +60,7 @@ cd extend_ctyper_database
 source setup_env.sh
 cp -r scripts ../
 cp Snakefile ..```
-
+```
 Your environment to run database construction is complete.  Within the
  directory /share/Extend_ori, you should have a folder scripts, and a file Snakefile.
 
