@@ -13,7 +13,7 @@ TARGETS := kmer_searcher
 all: $(TARGETS)
 
 kmer_searcher: $(SRCS)
-	$(CXX) $(CXXFLAGS) -DCOUNTINT=uint8_t $^ -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -DCOUNTINT=uint8_t $^ -o $@ $(LDFLAGS)  -Wl,-rpath=$(CONDA_PREFIX)/lib 
 
 clean:
 	rm -f $(TARGETS) *.o

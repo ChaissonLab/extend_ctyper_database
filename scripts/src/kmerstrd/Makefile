@@ -7,7 +7,7 @@ SRCS := src/main.cpp
 all: $(TARGET)
 
 $(TARGET): $(SRCS)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+	$(CXX) $(CXXFLAGS) -o $@ $^ -Wl,-rpath=$(CONDA_PREFIX)/lib 
 
 clean:
 	rm -f $(TARGET)
