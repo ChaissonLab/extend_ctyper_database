@@ -34,7 +34,9 @@ which requires g++ to be installed.
 
 ```
 sudo apt update
-sudo apt install -y build-essential git
+sudo apt install -y build-essential
+sudo apt install -y git
+
 ```
 
 ### 2.2 conda
