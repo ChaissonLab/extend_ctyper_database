@@ -89,7 +89,9 @@ Create a directory `/share/Extend_ori/Assemblies`, and copy all of the repeat ma
  primary and secondary contigs are *not* compatible with ctyper.
 
 
-You will create a file  `query_pathes_withrefs.txt` (spelling needs to be exact, and to match what is in the .json file for QueryPath) that has two columns, one the name of the 
+You will create a file  `query_pathes_withrefs.txt` (spelling needs to be exact, and to match what is in the .json file for QueryPath) that has two columns, 
+one the name of the sample and haplotype (e.g. sample001_h1), and the other the path to the assembly (Assembly/sample_00_h1.fasta).
+You can follow the example here: https://github.com/Walfred-MA/PATs/?tab=readme-ov-file#b-create-the-assembliesreference-path-list-tsv
 
 ## 5. Run database construction 
 snakemake -k  --cluster "sbatch --partition htc  --time=500:00:00 {resources.slurm_extra}" --default-resources "mem_mb=3000" --jobs 500  --rerun-incomplete  --notemp --latency-wait 100 --resources mem_gb=1000
