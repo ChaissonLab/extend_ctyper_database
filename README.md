@@ -4,7 +4,8 @@ This is for the one-time installation of the ctyper database on Azure Cyclecloud
 ## 1. Preliminaries; cyclecloud setup.
 
 The Azure CycleCloud Workspace for Slurm should be created as a resource.  This will
-create the /shared NFS directory visible to all nodes.
+create the /shared NFS directory visible to all nodes. To be safe, plan for 2-3 times the total
+storage space of all the assemblies (they will need to be copied to the cyclecloud).
 
 The image should be Ubuntu 22.04, slurm 25.05.2 (current defaults with Cyclecloud)
 
