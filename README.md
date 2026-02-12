@@ -1,7 +1,7 @@
 This is for the one-time installation of the ctyper database.
 
 
-1. Preliminaries; cyclecloud setup.
+##1. Preliminaries; cyclecloud setup.
 
 The Azure CycleCloud Workspace for Slurm should be created as a resource.  This will create the /shared NFS directory visible to all nodes.
 
@@ -24,8 +24,8 @@ GPU VM Type
 
 The Extend_ori directory should be copied to /shared
 
-2. Environment setup.
-2.1 g++
+##2. Environment setup.
+###2.1 g++
 Most of the environment is set up using conda, however some binaries are built from source,
 which requires g++ to be installed.
 
@@ -35,7 +35,7 @@ sudo apt update
 sudo apt install -y build-essential git
 ```
 
-2.2 conda
+###2.2 conda
 
 You will want to install conda in a location that is accessible on NFS.
 
@@ -44,3 +44,4 @@ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 chmod +x ./Miniconda3-latest-Linux-x86_64.sh
 ./Miniconda3-latest-Linux-x86_64.sh
 ```
+Follow the instructions, and ensure that the root directory is under `/share`
